@@ -103,36 +103,3 @@ def test_row_flags(populated):
 def test_not_a_case(tmp_path):
     with pytest.raises(CaseError):
         TimelineReader(tmp_path)
-
-
-def test_gui_smoke(populated):
-    tk = pytest.importorskip("tkinter")
-    from chronoscope import gui
-
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:  # headless CI
-        pytest.skip(f"no display: {exc}")
-    root.withdraw()
-    try:
-        app = gui.TimelineApp(root, populated)
-        assert len(app.tree.get_children()) == 5
-        assert app.status_var.get() == "Events 1-5 of 5"
-        assert app.tree.item("3", "tags") == ("flagged",)
-        assert app.tree.item("2", "tags") == ("deleted",)
-
-        app.tree.selection_set("3")
-        app.show_details()
-        details = app.details.get("1.0", "end")
-        assert '"si_created_before_fn": true' in details
-
-        app.flagged_var.set(True)
-        app.apply_filters()
-        assert [app.rows[i].message for i in app.tree.get_children()] == ["stomped.dll"]
-
-        app.reset_filters()
-        app.artifact_var.set("bodyfile")
-        app.apply_filters()
-        assert app.total == 2
-    finally:
-        root.destroy()

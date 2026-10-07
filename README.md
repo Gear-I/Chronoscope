@@ -18,7 +18,7 @@ Or, from a checkout:
 pip install -e ".[dev]"
 ```
 
-The distribution is named `chronoscope-forensics` because `chronoscope` is taken on PyPI. The command and the import name are both `chronoscope`. The `evtx` extra pulls in `python-evtx`. Without it, the event log parser is listed as unavailable and everything else still works.
+The distribution is named `chronoscope-forensics` because `chronoscope` is taken on PyPI. The command and the import name are both `chronoscope`. The `evtx` extra pulls in `python-evtx`. Without it, the event log parser is listed as unavailable and everything else still works. The `gui` extra pulls in PySide6 for the desktop viewer.
 
 ## Quick start
 
@@ -61,9 +61,9 @@ The SHA-256 of every export is recorded in the audit log.
 
 ## Desktop viewer
 
-`chronoscope gui ./case-2024-017` opens a desktop timeline viewer. You can also run `chronoscope gui` and choose a case with File > Open case. It uses Tkinter, which ships with Python, so it needs no extra dependencies. Some Linux distributions package Tk separately, for example as `python3-tk`.
+`chronoscope gui ./case-2024-017` opens a desktop timeline viewer built on Qt. You can also run `chronoscope gui` and choose a case with File > Open case. It needs the `gui` extra, which installs PySide6: `pip install 'chronoscope-forensics[gui]'`.
 
-- Events are listed in timeline order, 1,000 per page. Select one to see all of its fields and attributes.
+- Events are listed in timeline order and load in batches as you scroll, so large cases open quickly. Select one to see all of its fields and attributes.
 - You can filter by text (message, path or description), artifact, evidence label, and time range. Times use ISO 8601 with an offset.
 - **Possible timestomp** shows only `$MFT` entries with an SI/FN indicator. These rows are red. Deleted entries are grey.
 - The case database is opened read-only (SQLite `mode=ro`), so browsing can't change the case. Viewing isn't recorded in the audit log.

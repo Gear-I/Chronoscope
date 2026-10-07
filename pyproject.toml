@@ -23,7 +23,8 @@ dependencies = ["click>=8.1"]
 
 [project.optional-dependencies]
 evtx = ["python-evtx>=0.8"]
-dev = ["pytest>=8", "ruff>=0.5", "python-evtx>=0.8"]
+gui = ["PySide6>=6.6"]
+dev = ["pytest>=8", "ruff>=0.5", "python-evtx>=0.8", "PySide6>=6.6"]
 
 [project.scripts]
 chronoscope = "chronoscope.cli:main"

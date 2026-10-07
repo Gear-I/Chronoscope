@@ -210,9 +210,11 @@ def gui(case_dir: Path | None) -> None:
     """Open the desktop timeline viewer (read-only), optionally on CASE_DIR."""
     try:
         from chronoscope.gui import run
-    except ImportError as exc:  # some Linux Pythons ship without Tk
-        raise click.ClickException(f"Tkinter is not available: {exc}") from exc
-    run(case_dir)
+    except ImportError as exc:
+        raise click.ClickException(
+            f"the GUI needs PySide6 (pip install 'chronoscope-forensics[gui]'): {exc}"
+        ) from exc
+    sys.exit(run(case_dir))
 
 
 @main.command()

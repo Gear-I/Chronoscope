@@ -142,7 +142,7 @@ def test_evtx_detection(tmp_path):
 
 def test_registry_lists_builtins():
     registry = discover(include_plugins=False)
-    expected = {"filesystem", "bodyfile", "chromium_history", "firefox_history", "evtx"}
+    expected = {"filesystem", "bodyfile", "chromium_history", "firefox_history", "evtx", "mft"}
     assert expected <= set(registry.parsers) | set(registry.unavailable)
 
 

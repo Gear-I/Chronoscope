@@ -10,6 +10,7 @@ from chronoscope.parsers.bodyfile import BodyfileParser
 from chronoscope.parsers.browsers import ChromiumHistoryParser, FirefoxHistoryParser
 from chronoscope.parsers.evtx import EvtxParser
 from chronoscope.parsers.filesystem import FilesystemParser
+from chronoscope.parsers.mft import MftParser
 
 __all__ = ["ParseContext", "Parser", "Registry", "discover", "ENTRY_POINT_GROUP"]
 
@@ -20,6 +21,7 @@ BUILTIN: tuple[type[Parser], ...] = (
     ChromiumHistoryParser,
     FirefoxHistoryParser,
     EvtxParser,
+    MftParser,
 )
 
 

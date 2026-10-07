@@ -34,6 +34,7 @@ Evidence can be any of:
 
 - **One artifact file.** The parser is auto-detected. If nothing matches, Chronoscope records the file's own timestamps.
 - **A directory** (a mounted image or a triage collection). Chronoscope records file system timestamps for every file and directory. It also detects and parses any browser databases and event logs it finds inside.
+- **An extracted `$MFT`** (for example from `icat image.E01 0` or a triage collector). Every entry, including deleted ones, gets its SI and FN times.
 - **A Sleuth Kit body file** (`fls -r -m / image.E01 > image.body`). This is the way to use disk images, including deleted entries.
 
 Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope parsers` to list them. Set the name recorded in the audit log with `--operator` or the `CHRONOSCOPE_OPERATOR` environment variable.
@@ -47,6 +48,7 @@ Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope 
 | `chromium_history` | Chrome, Edge, Brave, Opera `History` | Page visits with transition type, download start and finish |
 | `firefox_history` | Firefox `places.sqlite` | Page visits with visit type, bookmarks added or modified |
 | `evtx` | Windows `.evtx` (3.1 and Windows 11 3.2) | One event per record, including EventData and UserData fields |
+| `mft` | Raw NTFS `$MFT` (1024- or 4096-byte records) | All four `$STANDARD_INFORMATION` and `$FILE_NAME` times per entry, with full path, in-use/deleted flag, entry and sequence numbers, and size. SI events flag possible timestomping: SI created before FN created, or whole-second SI times next to fractional FN times |
 
 ## Output
 
@@ -84,7 +86,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Parsers can live in this repository or s
 
 - `python-evtx` is pure Python and slow, at roughly 3 minutes for a 20 MB log. A faster backend is planned.
 - Disk images are supported through body files rather than opened directly.
-- Planned next: NTFS `$MFT` with `$STANDARD_INFORMATION` vs `$FILE_NAME` comparison to flag timestomping, prefetch, LNK, registry hives, and HTML/PDF reports.
+- The `$MFT` parser does not follow `$ATTRIBUTE_LIST` into extension records, so a file with very many hard links can miss some names. Deleted entries whose parent directory was reused are placed under `/$OrphanFiles`.
+- Planned next: prefetch, LNK, registry hives, and HTML/PDF reports.
 
 ## License
 

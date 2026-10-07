@@ -8,6 +8,7 @@ background through the same code paths, hashing and audit log as the CLI.
 
 from __future__ import annotations
 
+import gc
 import json
 import sys
 from collections.abc import Callable
@@ -15,7 +16,14 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPersistentModelIndex, Qt
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
+    Qt,
+    QTimer,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -83,6 +91,48 @@ _Index = QModelIndex | QPersistentModelIndex
 RESOURCES = files("chronoscope") / "resources"
 #: Windows groups taskbar buttons by this ID; without it they show the Python icon.
 APP_USER_MODEL_ID = "Chronoscope.TimelineViewer"
+
+
+class MainThreadGC(QObject):
+    """Runs Python's cyclic garbage collector only on the GUI thread while active.
+
+    Automatic collection runs on whichever thread happens to allocate. If that is a worker
+    thread and the garbage includes Qt widgets, they are destroyed off the GUI thread, which
+    crashes Qt (seen as a segfault on macOS). While a background job runs, automatic
+    collection is switched off and a GUI-thread timer collects instead.
+    """
+
+    INTERVAL_MS = 500
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.INTERVAL_MS)
+        self.timer.timeout.connect(self.collect)
+        self.was_enabled = False
+
+    @property
+    def active(self) -> bool:
+        return self.timer.isActive()
+
+    def start(self) -> None:
+        if self.active:
+            return
+        gc.collect()  # clear existing garbage here, on the GUI thread
+        self.was_enabled = gc.isenabled()
+        gc.disable()
+        self.timer.start()
+
+    def stop(self) -> None:
+        if not self.active:
+            return
+        self.timer.stop()
+        gc.collect()
+        if self.was_enabled:
+            gc.enable()
+
+    def collect(self) -> None:
+        gc.collect(0)
 
 
 def pixmap(name: str) -> QPixmap:
@@ -205,6 +255,7 @@ class MainWindow(QMainWindow):
         self.case_dir: Path | None = None
         self.operator = default_operator()
         self.job: Job | None = None
+        self.gc_guard = MainThreadGC(self)
         self.model = EventTableModel()
         self.setWindowTitle(f"Chronoscope {__version__}")
         self.setWindowIcon(app_icon())
@@ -471,6 +522,7 @@ class MainWindow(QMainWindow):
         self._set_case_actions_enabled(False)
         self.progress.show()
         self.statusBar().showMessage(message)
+        self.gc_guard.start()
         job.start()
 
     def _job_finished(
@@ -480,6 +532,7 @@ class MainWindow(QMainWindow):
         failure_title: str,
         failure_note: str,
     ) -> None:
+        self.gc_guard.stop()
         job.deleteLater()
         self.job = None
         self.progress.hide()

@@ -193,7 +193,7 @@ class IngestDialog(_RequestDialog):
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.parsers.addItem(item)
         self.parsers.setEnabled(False)
-        self.auto.toggled.connect(lambda on: self.parsers.setEnabled(not on))
+        self.auto.toggled.connect(self.parsers.setDisabled)
         self.operator = QLineEdit(operator)
         note = QLabel(
             "Ingest from a read-only mount, a write blocker or a verified copy. "

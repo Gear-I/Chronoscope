@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import time
 
@@ -29,8 +30,10 @@ def qapp():
 @pytest.fixture
 def window(qapp, populated):  # noqa: F811
     win = gui.MainWindow(populated)
-    win.reports = []
-    win.report = lambda icon, title, text, details="": win.reports.append((title, text, details))
+    # No reference back to ``win``: a cycle would leave the window to the cyclic GC.
+    reports: list[tuple[str, str, str]] = []
+    win.reports = reports
+    win.report = lambda icon, title, text, details="": reports.append((title, text, details))
     yield win
     win.close()
 
@@ -72,6 +75,7 @@ def test_ingest_from_window(qapp, window, populated, mft_evidence):  # noqa: F81
     request = gui_tasks.IngestRequest(mft_evidence, "WS99", ["mft"], "gui-tester")
     window.start_ingest(request)
     assert not window.ingest_action.isEnabled()  # no second job while one runs
+    assert not gc.isenabled()  # only the GUI-thread timer collects during a job
     _wait(qapp, window)
 
     [(title, text, _details)] = window.reports
@@ -82,6 +86,7 @@ def test_ingest_from_window(qapp, window, populated, mft_evidence):  # noqa: F81
     assert "WS99" in [window.evidence.itemText(i) for i in range(window.evidence.count())]
     assert window.ingest_action.isEnabled()
     assert window.operator == "gui-tester"
+    assert gc.isenabled()  # automatic collection is back on after the job
 
     audit = _audit(populated)
     assert [e["action"] for e in audit[-2:]] == ["ingest.start", "ingest.complete"]

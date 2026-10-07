@@ -35,6 +35,9 @@ version = { attr = "chronoscope.__version__" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+chronoscope = ["resources/*.png"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

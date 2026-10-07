@@ -11,11 +11,20 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Callable
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPersistentModelIndex, Qt
-from PySide6.QtGui import QAction, QColor, QFontDatabase, QKeySequence, QPalette
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFontDatabase,
+    QIcon,
+    QKeySequence,
+    QPalette,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -31,6 +40,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -70,6 +80,20 @@ COLUMNS = (
 FLAGGED_COLOR = QColor("#d32f2f")
 DELETED_COLOR = QColor("#8a8a8a")
 _Index = QModelIndex | QPersistentModelIndex
+RESOURCES = files("chronoscope") / "resources"
+#: Windows groups taskbar buttons by this ID; without it they show the Python icon.
+APP_USER_MODEL_ID = "Chronoscope.TimelineViewer"
+
+
+def pixmap(name: str) -> QPixmap:
+    """A packaged image (``logo.png`` or ``icon.png``), read via importlib.resources."""
+    image = QPixmap()
+    image.loadFromData((RESOURCES / name).read_bytes())
+    return image
+
+
+def app_icon() -> QIcon:
+    return QIcon(pixmap("icon.png"))
 
 
 class EventTableModel(QAbstractTableModel):
@@ -183,13 +207,17 @@ class MainWindow(QMainWindow):
         self.job: Job | None = None
         self.model = EventTableModel()
         self.setWindowTitle(f"Chronoscope {__version__}")
+        self.setWindowIcon(app_icon())
         self.resize(1280, 800)
         self._build_menu()
-        central = QWidget()
-        layout = QVBoxLayout(central)
+        timeline = QWidget()
+        layout = QVBoxLayout(timeline)
         layout.addLayout(self._build_filters())
         layout.addWidget(self._build_body(), 1)
-        self.setCentralWidget(central)
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self._build_welcome())
+        self.pages.addWidget(timeline)
+        self.setCentralWidget(self.pages)
         self.progress = QProgressBar(maximumWidth=160)
         self.progress.setRange(0, 0)  # indeterminate: ingest has no reliable total
         self.progress.hide()
@@ -224,10 +252,34 @@ class MainWindow(QMainWindow):
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
         menu.addAction(quit_action)
+        help_menu = self.menuBar().addMenu("&Help")
+        about_action = QAction("&About Chronoscope", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
         toolbar = self.addToolBar("Case")
         toolbar.setMovable(False)
         for action in (self.open_action, self.ingest_action, self.export_action):
             toolbar.addAction(action)
+
+    def _build_welcome(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addStretch(1)
+        self.welcome_logo = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.welcome_logo.setPixmap(
+            pixmap("logo.png").scaledToWidth(360, Qt.TransformationMode.SmoothTransformation)
+        )
+        layout.addWidget(self.welcome_logo)
+        hint = QLabel(
+            "Open a case to browse its timeline, ingest evidence or export.",
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
+        layout.addWidget(hint)
+        button = QPushButton("Open case...")
+        button.clicked.connect(self.choose_case)
+        layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch(2)
+        return page
 
     def _build_filters(self) -> QGridLayout:
         grid = QGridLayout()
@@ -347,6 +399,7 @@ class MainWindow(QMainWindow):
         self.case_dir = case_dir
         name = reader.meta.get("name", case_dir.name)
         self.setWindowTitle(f"Chronoscope {__version__} - {name}")
+        self.pages.setCurrentIndex(1)
         self.refresh_choices()
         self._set_filters_enabled(True)
         self._set_case_actions_enabled(True)
@@ -445,6 +498,19 @@ class MainWindow(QMainWindow):
         icon = QMessageBox.Icon.Warning if result.errors else QMessageBox.Icon.Information
         self.report(icon, "Ingest complete", text, details)
 
+    def show_about(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("About Chronoscope")
+        box.setIconPixmap(
+            pixmap("logo.png").scaledToWidth(220, Qt.TransformationMode.SmoothTransformation)
+        )
+        box.setText(f"<b>Chronoscope {__version__}</b>")
+        box.setInformativeText(
+            "Forensically sound unified timeline builder for digital forensic examiners."
+            "<br><br>MIT License"
+        )
+        box.exec()
+
     def _export_done(self, result: ExportResult) -> None:
         self.report(
             QMessageBox.Icon.Information,
@@ -531,6 +597,11 @@ class MainWindow(QMainWindow):
 def run(case_dir: Path | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("Chronoscope")
+    app.setWindowIcon(app_icon())
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
     window = MainWindow(case_dir)
     window.show()
     return app.exec()

@@ -103,3 +103,20 @@ def test_bad_case_directory(qapp, tmp_path, monkeypatch):
         assert not window.search.isEnabled()
     finally:
         window.close()
+
+
+def test_logo_resources_and_welcome_page(qapp, populated):  # noqa: F811
+    logo, icon = gui.pixmap("logo.png"), gui.pixmap("icon.png")
+    assert (logo.width(), logo.height()) == (640, 469)
+    assert (icon.width(), icon.height()) == (256, 256)
+    assert not gui.app_icon().isNull()
+
+    window = gui.MainWindow()
+    try:
+        assert window.pages.currentIndex() == 0  # welcome page with the logo
+        assert not window.welcome_logo.pixmap().isNull()
+        assert not window.windowIcon().isNull()
+        assert window.open_case(populated)
+        assert window.pages.currentIndex() == 1
+    finally:
+        window.close()

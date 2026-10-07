@@ -11,8 +11,7 @@ import click
 
 from chronoscope import __version__
 from chronoscope.case import Case, CaseError
-from chronoscope.export import write_csv, write_jsonl
-from chronoscope.hashing import hash_file
+from chronoscope.export import FORMATS, export_timeline
 from chronoscope.ingest import WRITABLE_WARNING, IngestError, ingest
 from chronoscope.parsers import discover
 from chronoscope.timeutil import parse_iso
@@ -114,7 +113,7 @@ def ingest_cmd(
 @main.command()
 @CASE_DIR
 @click.option("-o", "--output", required=True, type=click.Path(dir_okay=False, path_type=Path))
-@click.option("-f", "--format", "fmt", type=click.Choice(["csv", "jsonl"]), default="csv")
+@click.option("-f", "--format", "fmt", type=click.Choice(FORMATS), default="csv")
 @click.option("--start", type=AwareDateTime(), help="Only events at or after this time.")
 @click.option("--end", type=AwareDateTime(), help="Only events at or before this time.")
 @click.option(
@@ -140,21 +139,8 @@ def export(
     if output.exists() and not force:
         raise click.ClickException(f"{output} exists; use --force to overwrite")
     with _open(ctx, case_dir) as case:
-        events = case.iter_events(start, end)
-        with open(output, "w", encoding="utf-8", newline="") as fh:
-            count = write_csv(events, fh, excel_safe) if fmt == "csv" else write_jsonl(events, fh)
-        digest = hash_file(output)
-        case.audit.append(
-            "export",
-            output=str(output.absolute()),
-            format=fmt,
-            excel_safe=excel_safe,
-            start=start.isoformat() if start else None,
-            end=end.isoformat() if end else None,
-            events=count,
-            sha256=digest.sha256,
-        )
-    click.echo(f"Wrote {count} event(s) to {output} (SHA-256 {digest.sha256})")
+        result = export_timeline(case, output, fmt, start, end, excel_safe)
+    click.echo(f"Wrote {result.events} event(s) to {output} (SHA-256 {result.sha256})")
 
 
 @main.command()

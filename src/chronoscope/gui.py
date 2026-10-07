@@ -1,14 +1,16 @@
 """Desktop timeline viewer built on Qt (PySide6, the optional ``gui`` extra).
 
-Opens a case read-only and lists its events in timeline order. Rows are loaded in batches as
-you scroll, so large cases open instantly. Filters cover text, artifact, evidence, time range,
-timestomp flags and deleted entries.
+Browses a case's timeline through a read-only connection. Rows are loaded in batches as you
+scroll, so large cases open instantly. Filters cover text, artifact, evidence, time range,
+timestomp flags and deleted entries. Ingest and export (``chronoscope.gui_tasks``) run in the
+background through the same code paths, hashing and audit log as the CLI.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QStyle,
@@ -38,6 +41,20 @@ from PySide6.QtWidgets import (
 
 from chronoscope import __version__
 from chronoscope.case import CaseError, StoredEvent
+from chronoscope.export import ExportResult
+from chronoscope.gui_tasks import (
+    ExportDialog,
+    ExportRequest,
+    IngestDialog,
+    IngestRequest,
+    Job,
+    default_operator,
+    describe_ingest,
+    run_export,
+    run_ingest,
+)
+from chronoscope.ingest import IngestResult
+from chronoscope.parsers import discover
 from chronoscope.timeutil import parse_iso
 from chronoscope.viewer import Filters, TimelineReader, is_deleted, is_flagged
 
@@ -65,6 +82,7 @@ class EventTableModel(QAbstractTableModel):
         self.total = 0
         self.events: list[StoredEvent] = []
         self.marks: list[str] = []  # "flagged", "deleted" or "" per loaded row
+        self.paused = False  # no reads while a background job writes to the case
 
     def set_query(self, reader: TimelineReader | None, filters: Filters) -> None:
         self.beginResetModel()
@@ -85,7 +103,7 @@ class EventTableModel(QAbstractTableModel):
         return 0 if parent.isValid() else len(COLUMNS)
 
     def canFetchMore(self, parent: _Index) -> bool:
-        return not parent.isValid() and len(self.events) < self.total
+        return not self.paused and not parent.isValid() and len(self.events) < self.total
 
     def fetchMore(self, parent: _Index) -> None:
         if self.reader is None or parent.isValid():
@@ -160,6 +178,9 @@ class MainWindow(QMainWindow):
     def __init__(self, case_dir: Path | None = None) -> None:
         super().__init__()
         self.reader: TimelineReader | None = None
+        self.case_dir: Path | None = None
+        self.operator = default_operator()
+        self.job: Job | None = None
         self.model = EventTableModel()
         self.setWindowTitle(f"Chronoscope {__version__}")
         self.resize(1280, 800)
@@ -169,24 +190,44 @@ class MainWindow(QMainWindow):
         layout.addLayout(self._build_filters())
         layout.addWidget(self._build_body(), 1)
         self.setCentralWidget(central)
+        self.progress = QProgressBar(maximumWidth=160)
+        self.progress.setRange(0, 0)  # indeterminate: ingest has no reliable total
+        self.progress.hide()
+        self.statusBar().addPermanentWidget(self.progress)
         self._set_filters_enabled(False)
+        self._set_case_actions_enabled(False)
         self.statusBar().showMessage("Open a case with File > Open case... (Ctrl+O)")
         if case_dir is not None:
             self.open_case(case_dir)
 
     # -- layout ------------------------------------------------------------------------
 
+    def _action(self, text: str, shortcut: Any, slot: Callable[[], None]) -> QAction:
+        action = QAction(text, self)
+        action.setShortcut(shortcut)
+        action.triggered.connect(slot)
+        return action
+
     def _build_menu(self) -> None:
+        self.open_action = self._action(
+            "&Open case...", QKeySequence.StandardKey.Open, self.choose_case
+        )
+        self.ingest_action = self._action("&Ingest evidence...", "Ctrl+I", self.ingest_evidence)
+        self.export_action = self._action("&Export timeline...", "Ctrl+E", self.export_timeline)
         menu = self.menuBar().addMenu("&File")
-        open_action = QAction("&Open case...", self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self.choose_case)
-        menu.addAction(open_action)
+        menu.addAction(self.open_action)
+        menu.addSeparator()
+        menu.addAction(self.ingest_action)
+        menu.addAction(self.export_action)
         menu.addSeparator()
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
         menu.addAction(quit_action)
+        toolbar = self.addToolBar("Case")
+        toolbar.setMovable(False)
+        for action in (self.open_action, self.ingest_action, self.export_action):
+            toolbar.addAction(action)
 
     def _build_filters(self) -> QGridLayout:
         grid = QGridLayout()
@@ -274,6 +315,19 @@ class MainWindow(QMainWindow):
         ):
             widget.setEnabled(enabled)
 
+    def _set_case_actions_enabled(self, enabled: bool) -> None:
+        has_case = self.case_dir is not None
+        self.ingest_action.setEnabled(enabled and has_case)
+        self.export_action.setEnabled(enabled and has_case)
+        self.open_action.setEnabled(enabled or not has_case)
+
+    def report(self, icon: QMessageBox.Icon, title: str, text: str, details: str = "") -> None:
+        """Show an outcome to the user (a separate method so tests can capture it)."""
+        box = QMessageBox(icon, title, text, parent=self)
+        if details:
+            box.setDetailedText(details)
+        box.exec()
+
     # -- actions -----------------------------------------------------------------------
 
     def choose_case(self) -> None:
@@ -290,14 +344,113 @@ class MainWindow(QMainWindow):
         if self.reader is not None:
             self.reader.close()
         self.reader = reader
+        self.case_dir = case_dir
         name = reader.meta.get("name", case_dir.name)
-        self.setWindowTitle(f"Chronoscope {__version__} - {name} (read-only)")
-        for box, column in ((self.artifact, "artifact"), (self.evidence, "evidence_label")):
-            box.clear()
-            box.addItems([ALL, *reader.distinct(column)])
+        self.setWindowTitle(f"Chronoscope {__version__} - {name}")
+        self.refresh_choices()
         self._set_filters_enabled(True)
+        self._set_case_actions_enabled(True)
         self.reset_filters()
         return True
+
+    def refresh_choices(self) -> None:
+        """Reload the artifact and evidence lists, keeping the current selections."""
+        assert self.reader is not None
+        for box, column in ((self.artifact, "artifact"), (self.evidence, "evidence_label")):
+            current = box.currentText() or ALL
+            box.clear()
+            box.addItems([ALL, *self.reader.distinct(column)])
+            box.setCurrentIndex(max(0, box.findText(current)))
+
+    def ingest_evidence(self) -> None:
+        if self.case_dir is None or self.job is not None:
+            return
+        dialog = IngestDialog(self, discover(), self.operator)
+        if dialog.exec():
+            self.start_ingest(dialog.request)
+
+    def export_timeline(self) -> None:
+        if self.case_dir is None or self.job is not None:
+            return
+        dialog = ExportDialog(self, self.operator, self.start.text(), self.end.text())
+        if dialog.exec():
+            self.start_export(dialog.request)
+
+    def start_ingest(self, request: IngestRequest) -> None:
+        assert self.case_dir is not None
+        self.operator = request.operator
+        case_dir = self.case_dir
+        self._start_job(
+            f"Ingesting {request.evidence}...",
+            lambda: run_ingest(case_dir, request),
+            self._ingest_done,
+            "Ingest failed",
+            "The ingest was rolled back, so nothing was added to the case. "
+            "The audit log records the failure.",
+        )
+
+    def start_export(self, request: ExportRequest) -> None:
+        assert self.case_dir is not None
+        self.operator = request.operator
+        case_dir = self.case_dir
+        self._start_job(
+            f"Exporting to {request.output}...",
+            lambda: run_export(case_dir, request),
+            self._export_done,
+            "Export failed",
+            "The output file may be incomplete. The export was not recorded in the audit log.",
+        )
+
+    def _start_job(
+        self,
+        message: str,
+        fn: Callable[[], Any],
+        on_success: Callable[[Any], None],
+        failure_title: str,
+        failure_note: str,
+    ) -> None:
+        job = self.job = Job(fn, self)
+        job.finished.connect(
+            lambda: self._job_finished(job, on_success, failure_title, failure_note)
+        )
+        self.model.paused = True
+        self._set_filters_enabled(False)
+        self._set_case_actions_enabled(False)
+        self.progress.show()
+        self.statusBar().showMessage(message)
+        job.start()
+
+    def _job_finished(
+        self,
+        job: Job,
+        on_success: Callable[[Any], None],
+        failure_title: str,
+        failure_note: str,
+    ) -> None:
+        job.deleteLater()
+        self.job = None
+        self.progress.hide()
+        self.model.paused = False
+        self._set_filters_enabled(True)
+        self._set_case_actions_enabled(True)
+        self.refresh_choices()
+        self.apply_filters()  # show new events before the summary appears
+        if job.error is not None:
+            self.report(QMessageBox.Icon.Critical, failure_title, f"{job.error}\n\n{failure_note}")
+        else:
+            on_success(job.result)
+
+    def _ingest_done(self, result: IngestResult) -> None:
+        text, details = describe_ingest(result)
+        icon = QMessageBox.Icon.Warning if result.errors else QMessageBox.Icon.Information
+        self.report(icon, "Ingest complete", text, details)
+
+    def _export_done(self, result: ExportResult) -> None:
+        self.report(
+            QMessageBox.Icon.Information,
+            "Export complete",
+            f"Wrote {result.events:,} event(s) to {result.output}\n\nSHA-256 {result.sha256}",
+        )
 
     def reset_filters(self) -> None:
         widgets = (self.search, self.start, self.end, self.flagged, self.deleted)
@@ -360,6 +513,14 @@ class MainWindow(QMainWindow):
             self.details.clear()
 
     def closeEvent(self, event: Any) -> None:
+        if self.job is not None:
+            self.report(
+                QMessageBox.Icon.Information,
+                "Please wait",
+                "An ingest or export is still running. Close the window when it finishes.",
+            )
+            event.ignore()
+            return
         self.model.set_query(None, Filters())
         if self.reader is not None:
             self.reader.close()

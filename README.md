@@ -59,14 +59,15 @@ Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope 
 
 The SHA-256 of every export is recorded in the audit log.
 
-## Desktop viewer
+## Desktop app
 
 `chronoscope gui ./case-2024-017` opens a desktop timeline viewer built on Qt. You can also run `chronoscope gui` and choose a case with File > Open case. It needs the `gui` extra, which installs PySide6: `pip install 'chronoscope-forensics[gui]'`.
 
 - Events are listed in timeline order and load in batches as you scroll, so large cases open quickly. Select one to see all of its fields and attributes.
 - You can filter by text (message, path or description), artifact, evidence label, and time range. Times use ISO 8601 with an offset.
 - **Possible timestomp** shows only `$MFT` entries with an SI/FN indicator. These rows are red. Deleted entries are grey.
-- The case database is opened read-only (SQLite `mode=ro`), so browsing can't change the case. Viewing isn't recorded in the audit log.
+- **Ingest evidence** (Ctrl+I) takes a file or folder, an optional label, auto-detected or hand-picked parsers, and the operator name. **Export timeline** (Ctrl+E) writes CSV or JSONL, optionally limited to a time range and with the Excel-safe option. Both run in the background through the same code as `chronoscope ingest` and `chronoscope export`, so hashing, the all-or-nothing transaction and the audit-log entries are identical. The operator name defaults to `CHRONOSCOPE_OPERATOR` or the OS user.
+- Browsing uses a read-only connection (SQLite `mode=ro`) and isn't recorded in the audit log. While an ingest or export runs, the filters are paused and the window can't be closed.
 
 ## Forensic design
 

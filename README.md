@@ -59,6 +59,15 @@ Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope 
 
 The SHA-256 of every export is recorded in the audit log.
 
+## Desktop viewer
+
+`chronoscope gui ./case-2024-017` opens a desktop timeline viewer. You can also run `chronoscope gui` and choose a case with File > Open case. It uses Tkinter, which ships with Python, so it needs no extra dependencies. Some Linux distributions package Tk separately, for example as `python3-tk`.
+
+- Events are listed in timeline order, 1,000 per page. Select one to see all of its fields and attributes.
+- You can filter by text (message, path or description), artifact, evidence label, and time range. Times use ISO 8601 with an offset.
+- **Possible timestomp** shows only `$MFT` entries with an SI/FN indicator. These rows are red. Deleted entries are grey.
+- The case database is opened read-only (SQLite `mode=ro`), so browsing can't change the case. Viewing isn't recorded in the audit log.
+
 ## Forensic design
 
 - **Evidence is opened read-only.** SQLite artifacts are never opened in place. Even a read-only open can create or modify `-wal`/`-shm` side files, and `immutable=1` silently skips the WAL, where the most recent activity often lives. Chronoscope copies the database and its `-wal`/`-journal` to a private temp directory and parses the copy. The tests prove the original's hash is unchanged and no side files appear.

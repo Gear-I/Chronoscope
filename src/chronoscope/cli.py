@@ -203,6 +203,19 @@ def log(ctx: click.Context, case_dir: Path) -> None:
 
 
 @main.command()
+@click.argument(
+    "case_dir", required=False, type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+def gui(case_dir: Path | None) -> None:
+    """Open the desktop timeline viewer (read-only), optionally on CASE_DIR."""
+    try:
+        from chronoscope.gui import run
+    except ImportError as exc:  # some Linux Pythons ship without Tk
+        raise click.ClickException(f"Tkinter is not available: {exc}") from exc
+    run(case_dir)
+
+
+@main.command()
 def parsers() -> None:
     """List available parsers."""
     registry = discover()

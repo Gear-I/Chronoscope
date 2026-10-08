@@ -73,6 +73,17 @@ Register a built-in parser by adding it to `BUILTIN` in `src/chronoscope/parsers
 
   Expected differences: orphaned entries are named differently (`/$OrphanFiles` versus MFTECmd's `PathUnknown`), and names stored only in `$ATTRIBUTE_LIST` extension records show as "missing in chronoscope".
 
+- `tools/compare_plaso.py` compares a whole timeline with plaso: Chrome and Firefox history, EVTX, `$MFT`, body files and file system times. It matches each artifact to the corresponding plaso events and compares times at the coarser precision of the two tools:
+
+  ```bash
+  log2timeline.py --storage-file case.plaso EVIDENCE
+  psort.py -o json_line -w plaso.jsonl case.plaso
+  chronoscope export CASE -f jsonl -o timeline.jsonl
+  python tools/compare_plaso.py timeline.jsonl plaso.jsonl --out diffs.csv
+  ```
+
+  Use `--artifact` to limit the comparison and `--strip-prefix` when plaso's file system paths include the mount point. Expected differences: plaso reports a Firefox bookmark's modification time even when it equals the added time (the script drops those), and file system last-access times move whenever a tool reads the files, so run both tools on a read-only source.
+
 ## Shipping a parser as its own package
 
 ```toml

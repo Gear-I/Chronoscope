@@ -59,6 +59,20 @@ Rules:
 
 Register a built-in parser by adding it to `BUILTIN` in `src/chronoscope/parsers/__init__.py`.
 
+## Validating against other tools
+
+`tools/` holds scripts that compare Chronoscope's output with established tools on the same evidence. Run them on real data and mention the result in your PR.
+
+- `tools/compare_mftecmd.py` compares the `mft` parser with Eric Zimmerman's MFTECmd, entry by entry. It checks paths, flags, sizes and all eight SI/FN timestamps at 100 ns precision, plus the SI-before-FN timestomp flag:
+
+  ```bash
+  MFTECmd.exe -f $MFT --csv out --csvf mftecmd.csv --at
+  chronoscope export CASE -f jsonl -o timeline.jsonl
+  python tools/compare_mftecmd.py timeline.jsonl out/mftecmd.csv --out diffs.csv
+  ```
+
+  Expected differences: orphaned entries are named differently (`/$OrphanFiles` versus MFTECmd's `PathUnknown`), and names stored only in `$ATTRIBUTE_LIST` extension records show as "missing in chronoscope".
+
 ## Shipping a parser as its own package
 
 ```toml

@@ -15,6 +15,9 @@ from typing import ClassVar
 
 from chronoscope.event import TimelineEvent
 
+#: How much of a file inside an archive is read for ``can_parse_head`` detection.
+HEAD_SIZE = 64 * 1024
+
 
 @dataclass
 class ParseContext:
@@ -47,6 +50,15 @@ class Parser(ABC):
         Must not modify the file and should read as little as possible (a magic number and
         file name is usually enough).
         """
+
+    def can_parse_head(self, name: str, head: bytes) -> bool | None:
+        """Detection for a file inside an archive, from its base name and first bytes.
+
+        ``head`` holds the first ``HEAD_SIZE`` bytes (fewer if the file is smaller). Return
+        None if the parser cannot decide without a real file; the member's head is then
+        written to a temporary file and passed to ``can_parse``.
+        """
+        return None
 
     @abstractmethod
     def parse(self, path: Path, ctx: ParseContext) -> Iterator[TimelineEvent]:

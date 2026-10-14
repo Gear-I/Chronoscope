@@ -21,6 +21,16 @@ TIME_FIELDS = (
 )
 
 
+BODY_SUFFIXES = (".body", ".bodyfile")
+
+
+def _looks_like_body(first_line: str) -> bool:
+    record = _split(first_line.rstrip("\r\n"))
+    return record is not None and all(
+        record[k].replace(".", "", 1).isdigit() for k, _ in TIME_FIELDS
+    )
+
+
 def _split(line: str) -> dict[str, str] | None:
     # The name may itself contain '|', so peel fixed fields off both ends.
     head, sep, rest = line.partition("|")
@@ -40,17 +50,19 @@ class BodyfileParser(Parser):
     description = "Sleuth Kit body file (fls -m / mactime input)"
 
     def can_parse(self, path: Path) -> bool:
-        if path.suffix.lower() in (".body", ".bodyfile"):
+        if path.suffix.lower() in BODY_SUFFIXES:
             return path.is_file()
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
-                first = fh.readline(65536).rstrip("\r\n")
+                first = fh.readline(65536)
         except OSError:
             return False
-        record = _split(first)
-        return record is not None and all(
-            record[k].replace(".", "", 1).isdigit() for k, _ in TIME_FIELDS
-        )
+        return _looks_like_body(first)
+
+    def can_parse_head(self, name: str, head: bytes) -> bool:
+        if Path(name).suffix.lower() in BODY_SUFFIXES:
+            return True
+        return _looks_like_body(head.decode("utf-8", errors="replace").split("\n", 1)[0])
 
     def parse(self, path: Path, ctx: ParseContext) -> Iterator[TimelineEvent]:
         with open(path, encoding="utf-8", errors="backslashreplace", newline="") as fh:

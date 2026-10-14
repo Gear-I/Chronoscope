@@ -195,9 +195,12 @@ def parse_record(raw: bytes, entry: int) -> Record | None:
 def _record_size(path: Path) -> int | None:
     try:
         with open(path, "rb") as fh:
-            header = fh.read(0x20)
+            return _record_size_from(fh.read(0x20))
     except OSError:
         return None
+
+
+def _record_size_from(header: bytes) -> int | None:
     if len(header) < 0x20 or header[:4] != SIGNATURE:
         return None
     (allocated,) = struct.unpack_from("<I", header, 0x1C)
@@ -269,6 +272,11 @@ class MftParser(Parser):
         if not path.is_file():
             return False
         return path.name.upper() == "$MFT" or _record_size(path) is not None
+
+    def can_parse_head(self, name: str, head: bytes) -> bool:
+        if name.upper() == "$MFTMIRR":
+            return False  # NTFS's copy of the first four records; $MFT itself has them
+        return name.upper() == "$MFT" or _record_size_from(head) is not None
 
     def _names(self, path: Path, record_size: int) -> dict[int, tuple[int, bool, FileName]]:
         """First pass: just the primary name of every base record, for path building."""

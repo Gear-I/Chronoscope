@@ -127,6 +127,9 @@ class EvtxParser(Parser):
         except OSError:
             return False
 
+    def can_parse_head(self, name: str, head: bytes) -> bool:
+        return head.startswith(EVTX_MAGIC)
+
     def parse(self, path: Path, ctx: ParseContext) -> Iterator[TimelineEvent]:
         from Evtx.Evtx import Evtx  # opens the file read-only via mmap
 

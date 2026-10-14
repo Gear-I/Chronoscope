@@ -178,3 +178,18 @@ def test_export_dialog_validation(qapp, tmp_path, monkeypatch):
     assert dialog.request.fmt == "jsonl"
     assert dialog.request.start.isoformat() == "2024-03-01T00:00:00+00:00"
     assert dialog.request.end is None
+
+
+def test_describe_ingest_explains_fallback_and_archives():
+    from chronoscope.ingest import NO_ARTIFACT_NOTE, IngestResult
+
+    plain = IngestResult(1, "X", "file", items_seen=1, inserted=3, fallback_only=True)
+    plain.per_parser["filesystem"] = 3
+    text, _ = gui_tasks.describe_ingest(plain)
+    assert NO_ARTIFACT_NOTE in text
+
+    phone = IngestResult(2, "PHONE", "file", items_seen=1, archive_members=7)
+    phone.archive_members_parsed = 2
+    text, _ = gui_tasks.describe_ingest(phone)
+    assert "Archive: 7 member(s) scanned, 2 parsed as artifacts." in text
+    assert NO_ARTIFACT_NOTE not in text

@@ -12,7 +12,7 @@ import click
 from chronoscope import __version__
 from chronoscope.case import Case, CaseError
 from chronoscope.export import FORMATS, export_timeline
-from chronoscope.ingest import WRITABLE_WARNING, IngestError, ingest
+from chronoscope.ingest import NO_ARTIFACT_NOTE, WRITABLE_WARNING, IngestError, ingest
 from chronoscope.parsers import discover
 from chronoscope.timeutil import parse_iso
 from chronoscope.verify import verify_case
@@ -100,6 +100,13 @@ def ingest_cmd(
     )
     for name, count in sorted(result.per_parser.items()):
         click.echo(f"  {name:<20} {count}")
+    if result.archive_members:
+        click.echo(
+            f"Archive: {result.archive_members} member(s) scanned, "
+            f"{result.archive_members_parsed} parsed as artifacts"
+        )
+    if result.fallback_only:
+        click.secho(f"NOTE: {NO_ARTIFACT_NOTE}", fg="yellow", err=True)
     if WRITABLE_WARNING in result.warnings:
         click.secho(f"WARNING: {WRITABLE_WARNING}", fg="yellow", err=True)
     if result.warnings:

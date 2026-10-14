@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 
 from chronoscope.case import Case
 from chronoscope.export import FORMATS, ExportResult, export_timeline
-from chronoscope.ingest import WRITABLE_WARNING, IngestResult, ingest
+from chronoscope.ingest import NO_ARTIFACT_NOTE, WRITABLE_WARNING, IngestResult, ingest
 from chronoscope.parsers import Registry
 from chronoscope.timeutil import parse_iso
 
@@ -89,6 +89,13 @@ def describe_ingest(result: IngestResult) -> tuple[str, str]:
     ]
     for name, count in sorted(result.per_parser.items()):
         lines.append(f"    {name}: {count:,}")
+    if result.archive_members:
+        lines.append(
+            f"Archive: {result.archive_members:,} member(s) scanned, "
+            f"{result.archive_members_parsed:,} parsed as artifacts."
+        )
+    if result.fallback_only:
+        lines += ["", NO_ARTIFACT_NOTE]
     if WRITABLE_WARNING in result.warnings:
         lines += ["", f"Warning: {WRITABLE_WARNING}"]
     if result.errors:

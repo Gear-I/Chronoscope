@@ -9,6 +9,7 @@ from pathlib import Path
 from chronoscope.event import TimelineEvent
 from chronoscope.parsers.base import ParseContext, Parser
 from chronoscope.parsers.sqlite_copy import (
+    SQLITE_MAGIC,
     column_names,
     is_sqlite,
     open_sqlite_copy,
@@ -53,6 +54,9 @@ class _SQLiteArtifactParser(Parser):
 
     def can_parse(self, path: Path) -> bool:
         return path.name == self.filename and is_sqlite(path)
+
+    def can_parse_head(self, name: str, head: bytes) -> bool:
+        return name == self.filename and head.startswith(SQLITE_MAGIC)
 
     def related_files(self, path: Path) -> list[Path]:
         return side_files(path)

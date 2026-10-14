@@ -41,6 +41,9 @@ class FilesystemParser(Parser):
     def can_parse(self, path: Path) -> bool:
         return path.exists() or path.is_symlink()
 
+    def can_parse_head(self, name: str, head: bytes) -> bool:
+        return False  # archive members get their times from the archive, not lstat
+
     def parse(self, path: Path, ctx: ParseContext) -> Iterator[TimelineEvent]:
         st = os.lstat(path)
         kind = _kind(st.st_mode)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 
+from chronoscope.parsers.archive import ArchiveParser
 from chronoscope.parsers.base import ParseContext, Parser
 from chronoscope.parsers.bodyfile import BodyfileParser
 from chronoscope.parsers.browsers import ChromiumHistoryParser, FirefoxHistoryParser
@@ -22,6 +23,7 @@ BUILTIN: tuple[type[Parser], ...] = (
     FirefoxHistoryParser,
     EvtxParser,
     MftParser,
+    ArchiveParser,
 )
 
 

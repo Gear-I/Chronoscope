@@ -39,6 +39,7 @@ Evidence can be any of:
 - **One artifact file.** The parser is auto-detected. If nothing matches, Chronoscope records the file's own timestamps.
 - **A directory** (a mounted image or a triage collection). Chronoscope records file system timestamps for every file and directory. It also detects and parses any browser databases and event logs it finds inside.
 - **An extracted `$MFT`** (for example from `icat image.E01 0` or a triage collector). Every entry, including deleted ones, gets its SI and FN times.
+- **A Cellebrite UFED extraction** (the `.ufd` descriptor, or the `.zip` next to it). Chronoscope records each archived file's own timestamps and parses the artifacts it recognises inside, without extracting the whole archive.
 - **A Sleuth Kit body file** (`fls -r -m / image.E01 > image.body`). This is the way to use disk images, including deleted entries.
 
 Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope parsers` to list them. Set the name recorded in the audit log with `--operator` or the `CHRONOSCOPE_OPERATOR` environment variable.
@@ -53,6 +54,7 @@ Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope 
 | `firefox_history` | Firefox `places.sqlite` | Page visits with visit type, bookmarks added or modified |
 | `evtx` | Windows `.evtx` (3.1 and Windows 11 3.2) | One event per record, including EventData and UserData fields |
 | `mft` | Raw NTFS `$MFT` (1024- or 4096-byte records) | All four `$STANDARD_INFORMATION` and `$FILE_NAME` times per entry, with full path, in-use/deleted flag, entry and sequence numbers, and size. SI events flag possible timestomping: SI created before FN created, or whole-second SI times next to fractional FN times |
+| `zip` | `.zip` archives and Cellebrite UFED extractions (`.ufd` + `.zip`) | Each member's modified, accessed and created times from the zip's UTC extra fields (NTFS, UT, UX). Members that other parsers recognise, such as a browser `History` with its `-wal`, are extracted to a private temporary folder and parsed too |
 
 ## Output
 
@@ -101,7 +103,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Parsers can live in this repository or s
 - `python-evtx` is pure Python and slow, at roughly 3 minutes for a 20 MB log. A faster backend is planned.
 - Disk images are supported through body files rather than opened directly.
 - The `$MFT` parser does not follow `$ATTRIBUTE_LIST` into extension records, so a file with very many hard links can miss some names. Deleted entries whose parent directory was reused are placed under `/$OrphanFiles`.
-- Planned next: prefetch, LNK, registry hives, and HTML/PDF reports.
+- Zip members that carry only the plain zip date and time get no events, because that value is local time with no zone. Chronoscope counts them in a warning instead of guessing. Archives inside archives are not opened, tar-based extractions are not read yet, and archive members are covered by the archive's hash rather than hashed one by one.
+- Planned next: iOS and Android artifacts (Safari, messages, app usage), tar extractions, prefetch, LNK, registry hives, and HTML/PDF reports.
 
 ## License
 

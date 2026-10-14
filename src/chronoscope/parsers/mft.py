@@ -274,6 +274,8 @@ class MftParser(Parser):
         return path.name.upper() == "$MFT" or _record_size(path) is not None
 
     def can_parse_head(self, name: str, head: bytes) -> bool:
+        if name.upper() == "$MFTMIRR":
+            return False  # NTFS's copy of the first four records; $MFT itself has them
         return name.upper() == "$MFT" or _record_size_from(head) is not None
 
     def _names(self, path: Path, record_size: int) -> dict[int, tuple[int, bool, FileName]]:

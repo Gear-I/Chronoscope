@@ -9,17 +9,12 @@ import pytest
 from click.testing import CliRunner
 
 from chronoscope.cli import main
+from chronoscope.containers import CREATED, MODIFIED, UT_CTIME, ufd_targets
+from chronoscope.containers import zip_member_times as member_times
 from chronoscope.hashing import hash_file
 from chronoscope.ingest import NO_ARTIFACT_NOTE, ingest
 from chronoscope.parsers import ParseContext, discover
-from chronoscope.parsers.archive import (
-    CREATED,
-    MODIFIED,
-    UT_CTIME,
-    ArchiveParser,
-    member_times,
-    ufd_archives,
-)
+from chronoscope.parsers.archive import UfedParser
 
 from .conftest import DOWNLOAD_START, VISIT_IN_DB, VISIT_IN_WAL, make_chrome_history
 from .test_mft import build_mft, ft
@@ -95,13 +90,13 @@ def _corrupt_member(archive: Path, name: str) -> None:
 
 def test_member_times_prefer_ntfs_then_ut():
     source, times = member_times(ntfs_extra(DEVICE_M, DEVICE_A, DEVICE_C, 0), ut_extra(UT_M, UT_C))
-    assert source == "NTFS"
+    assert source == "zip NTFS field"
     assert times[0] == (MODIFIED, DEVICE_M)
     assert times[2] == (CREATED, DEVICE_C)
     # The central directory carries only the UT mtime; the local header has the rest.
     central_ut = struct.pack("<HHBI", 0x5455, 5, 0b101, int(UT_M.timestamp()))
     assert member_times(central_ut, ut_extra(UT_M, UT_C)) == (
-        "UT",
+        "zip UT field",
         [(MODIFIED, UT_M), (UT_CTIME, UT_C)],
     )
     assert member_times(b"", b"") == ("", [])
@@ -109,14 +104,14 @@ def test_member_times_prefer_ntfs_then_ut():
 
 def test_ufd_points_only_at_siblings(tmp_path):
     ufd = make_extraction(tmp_path / "case1", ufd_value="..\\..\\Windows\\EXTRACTION_FFS.zip")
-    assert ufd_archives(ufd) == [ufd.with_name("EXTRACTION_FFS.zip")]  # basename only
+    assert ufd_targets(ufd) == [(ufd.with_name("EXTRACTION_FFS.zip"), "zip")]  # basename only
     lonely = tmp_path / "x" / "LONELY.ufd"
     lonely.parent.mkdir()
     lonely.write_text("[Dumps]\nFileDump=missing.zip\n", encoding="utf-8")
-    assert ufd_archives(lonely) == []
+    assert ufd_targets(lonely) == []
     ctx = ParseContext(lonely.parent, lonely.name, "t")
-    assert list(ArchiveParser().parse(lonely, ctx)) == []
-    assert "names no archive" in ctx.warnings[0]
+    assert list(UfedParser().parse(lonely, ctx)) == []
+    assert "no readable container" in ctx.warnings[0]
 
 
 def test_ingest_ufd_reads_member_times_and_artifacts(case, tmp_path):
@@ -133,7 +128,8 @@ def test_ingest_ufd_reads_member_times_and_artifacts(case, tmp_path):
     assert result.per_parser["chromium_history"] == 3
     assert result.per_parser["mft"] == 68
     assert any(
-        "1 member(s) have only the zip's local, zone-less DOS time" in w for w in result.warnings
+        "1 member(s) have no usable timestamps (only the zip's local, zone-less DOS time)" in w
+        for w in result.warnings
     )
     assert any("filesystem1/corrupt.bin: cannot read" in w for w in result.warnings)
     # The descriptor and the archive are both hashed evidence, and neither was modified.
@@ -179,8 +175,8 @@ def test_zip_read_via_ufd_or_directly_gives_identical_events(case, tmp_path):
 
 def test_selected_parsers_limit_member_parsing(case, tmp_path):
     ufd = make_extraction(tmp_path / "ext")
-    result = ingest(case, ufd, label="PHONE", parser_names=["zip", "mft"])
-    assert set(result.per_parser) == {"zip", "mft"}
+    result = ingest(case, ufd, label="PHONE", parser_names=["ufed", "mft"])
+    assert set(result.per_parser) == {"ufed", "mft"}
     assert result.archive_members_parsed == 1
 
 

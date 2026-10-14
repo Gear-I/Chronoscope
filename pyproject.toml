@@ -24,7 +24,17 @@ dependencies = ["click>=8.1"]
 [project.optional-dependencies]
 evtx = ["python-evtx>=0.8"]
 gui = ["PySide6>=6.6"]
-dev = ["pytest>=8", "ruff>=0.5", "python-evtx>=0.8", "PySide6>=6.6"]
+images = ["pytsk3>=20231007", "libewf-python>=20231119"]
+archives = ["py7zr>=0.21"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+    "python-evtx>=0.8",
+    "PySide6>=6.6",
+    "pytsk3>=20231007",
+    "libewf-python>=20231119",
+    "py7zr>=0.21",
+]
 
 [project.scripts]
 chronoscope = "chronoscope.cli:main"

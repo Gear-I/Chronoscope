@@ -22,7 +22,7 @@ Or, from a checkout:
 pip install -e ".[dev]"
 ```
 
-The distribution is named `chronoscope-forensics` because `chronoscope` is taken on PyPI. The command and the import name are both `chronoscope`. The `evtx` extra pulls in `python-evtx`. Without it, the event log parser is listed as unavailable and everything else still works. The `gui` extra pulls in PySide6 for the desktop viewer.
+The distribution is named `chronoscope-forensics` because `chronoscope` is taken on PyPI. The command and the import name are both `chronoscope`. The `evtx` extra pulls in `python-evtx`. Without it, the event log parser is listed as unavailable and everything else still works. The `gui` extra pulls in PySide6 for the desktop viewer. The `images` extra pulls in `pytsk3` (The Sleuth Kit) and `libewf-python` for disk images, and `archives` pulls in `py7zr` for 7z. Zip and tar need nothing extra.
 
 ## Quick start
 
@@ -39,7 +39,8 @@ Evidence can be any of:
 - **One artifact file.** The parser is auto-detected. If nothing matches, Chronoscope records the file's own timestamps.
 - **A directory** (a mounted image or a triage collection). Chronoscope records file system timestamps for every file and directory. It also detects and parses any browser databases and event logs it finds inside.
 - **An extracted `$MFT`** (for example from `icat image.E01 0` or a triage collector). Every entry, including deleted ones, gets its SI and FN times.
-- **A Cellebrite UFED extraction** (the `.ufd` descriptor, or the `.zip` next to it). Chronoscope records each archived file's own timestamps and parses the artifacts it recognises inside, without extracting the whole archive.
+- **An archive or disk image**: `.zip`, `.tar`/`.tar.gz`/`.tgz`/`.tar.bz2`/`.tar.xz`, `.7z`, EnCase `.E01`/`.Ex01`, or a raw `.dd`/`.img`/`.raw` image (including split `.001`, `.002`, ...). Chronoscope records the timestamps of every file inside and parses the artifacts it recognises there, such as a `$MFT` in an NTFS image or a browser `History` in a phone extraction, without extracting everything. Disk images may have a partition table; every partition with a file system The Sleuth Kit can read is walked, including deleted entries.
+- **A Cellebrite UFED extraction**: ingest the `.ufd` descriptor, and Chronoscope reads the archive or image it names (a `.zip`, or a physical `.bin`).
 - **A Sleuth Kit body file** (`fls -r -m / image.E01 > image.body`). This is the way to use disk images, including deleted entries.
 
 Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope parsers` to list them. Set the name recorded in the audit log with `--operator` or the `CHRONOSCOPE_OPERATOR` environment variable.
@@ -54,7 +55,13 @@ Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope 
 | `firefox_history` | Firefox `places.sqlite` | Page visits with visit type, bookmarks added or modified |
 | `evtx` | Windows `.evtx` (3.1 and Windows 11 3.2) | One event per record, including EventData and UserData fields |
 | `mft` | Raw NTFS `$MFT` (1024- or 4096-byte records) | All four `$STANDARD_INFORMATION` and `$FILE_NAME` times per entry, with full path, in-use/deleted flag, entry and sequence numbers, and size. SI events flag possible timestomping: SI created before FN created, or whole-second SI times next to fractional FN times |
-| `zip` | `.zip` archives and Cellebrite UFED extractions (`.ufd` + `.zip`) | Each member's modified, accessed and created times from the zip's UTC extra fields (NTFS, UT, UX). Members that other parsers recognise, such as a browser `History` with its `-wal`, are extracted to a private temporary folder and parsed too |
+| `zip` | `.zip` archives | Each member's modified, accessed and created times from the zip's UTC extra fields (NTFS, UT, UX) |
+| `tar` | `.tar`, `.tar.gz`/`.tgz`, `.tar.bz2`, `.tar.xz` | Member modification times, plus access, change and creation times from pax headers when present |
+| `7z` | `.7z` archives (needs the `archives` extra) | Member modified, accessed and created times |
+| `disk_image` | `.E01`/`.Ex01` and raw `.dd`/`.img`/`.raw`/`.001` images (needs the `images` extra) | Modified, accessed, changed and created times of every file in every readable partition, including deleted entries |
+| `ufed` | Cellebrite UFED `.ufd` descriptors | The same, for the archive or image the descriptor names |
+
+For every container format, files inside that another parser recognises are streamed out to a private temporary folder and parsed too: for example a `$MFT` inside an NTFS image, or a browser `History` with its `-wal` file inside a phone extraction.
 
 ## Output
 
@@ -101,10 +108,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Parsers can live in this repository or s
 ## Known limitations
 
 - `python-evtx` is pure Python and slow, at roughly 3 minutes for a 20 MB log. A faster backend is planned.
-- Disk images are supported through body files rather than opened directly.
+- Disk images: VMDK, VHD/VHDX, QCOW2, AFF4 and DMG are not supported yet, nor are APFS, BitLocker, LVM or LUKS volumes. Only allocated files inside an image are scanned for artifacts; deleted entries get their timestamps only, because their clusters may have been reused.
 - The `$MFT` parser does not follow `$ATTRIBUTE_LIST` into extension records, so a file with very many hard links can miss some names. Deleted entries whose parent directory was reused are placed under `/$OrphanFiles`.
-- Zip members that carry only the plain zip date and time get no events, because that value is local time with no zone. Chronoscope counts them in a warning instead of guessing. Archives inside archives are not opened, tar-based extractions are not read yet, and archive members are covered by the archive's hash rather than hashed one by one.
-- Planned next: iOS and Android artifacts (Safari, messages, app usage), tar extractions, prefetch, LNK, registry hives, and HTML/PDF reports.
+- Zip members that carry only the plain zip date and time, and every file on a FAT or exFAT file system, get no timestamp events, because those times are local time with no zone. Chronoscope counts them in a warning instead of guessing. Archives inside archives are not opened. Files inside containers are covered by the container's hash rather than hashed one by one.
+- Planned next: iOS and Android artifacts (Safari, messages, app usage), more image formats (VMDK, VHDX, AFF4), prefetch, LNK, registry hives, and HTML/PDF reports.
 
 ## License
 

@@ -6,18 +6,18 @@ import os
 import re
 import shutil
 import tempfile
-import zipfile
-import zlib
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 from chronoscope.case import Case
+from chronoscope.containers import Container, ContainerError, Member, open_container
 from chronoscope.hashing import hash_file
 from chronoscope.parsers import ParseContext, Parser, Registry, discover
-from chronoscope.parsers.archive import ArchiveParser
+from chronoscope.parsers.archive import ContainerParser, container_relpath
 from chronoscope.parsers.base import HEAD_SIZE
-from chronoscope.parsers.sqlite_copy import SIDE_SUFFIXES
+from chronoscope.parsers.sqlite_copy import SIDE_SUFFIXES, SQLITE_MAGIC
 
 MAX_AUDITED_WARNINGS = 100
 WRITABLE_WARNING = (
@@ -143,81 +143,37 @@ class _Ingestor:
         for parser in parsers:
             self._run(parser, path)
         for parser in parsers:
-            if isinstance(parser, ArchiveParser):
-                self._expand_archives(parser, path)
+            if isinstance(parser, ContainerParser):
+                self._expand_containers(parser, path)
 
-    # -- archive members ---------------------------------------------------------------
+    # -- container members -------------------------------------------------------------
 
-    def _expand_archives(self, archive_parser: ArchiveParser, path: Path) -> None:
-        """Run the other artifact parsers on matching members of the archive(s).
+    def _expand_containers(self, container_parser: ContainerParser, path: Path) -> None:
+        """Run the other artifact parsers on matching files inside archives and disk images.
 
-        Members are detected from their name and first bytes; only matches (and their SQLite
-        side files) are extracted, to a private temporary directory that is removed after.
-        The archive itself is hashed as evidence; its members are not hashed separately.
+        Members are streamed in storage order. Each is detected from its name and first
+        ``HEAD_SIZE`` bytes; only matches, and SQLite ``-wal``/``-journal`` files (which may
+        come before their database), are written to a private temporary directory that is
+        removed afterwards. The container files are hashed as evidence; members are not
+        hashed one by one.
         """
-        member_parsers = [p for p in self.artifact_parsers if not isinstance(p, ArchiveParser)]
+        member_parsers = [p for p in self.artifact_parsers if not isinstance(p, ContainerParser)]
         if not member_parsers:
             return
-        base = PurePosixPath(self._relpath(path)).parent
-        for archive in archive_parser.archives(path):
-            relpath = self._relpath(path) if archive == path else (base / archive.name).as_posix()
+        for container, kind in container_parser.containers(path):
+            relpath = container_relpath(self._relpath(path), path, container)
+
+            def warn(message: str, prefix: str = relpath) -> None:
+                self.result.warnings.append(f"{prefix}: {message}")
+
             try:
                 with (
-                    zipfile.ZipFile(archive) as zf,
-                    tempfile.TemporaryDirectory(prefix="chronoscope-zip-") as tmp,
+                    open_container(container, kind, warn) as opened,
+                    tempfile.TemporaryDirectory(prefix="chronoscope-members-") as tmp,
                 ):
-                    self._scan_members(zf, relpath, member_parsers, Path(tmp))
-            except (OSError, zipfile.BadZipFile) as exc:
-                self.result.errors.append(f"cannot read archive {relpath}: {exc}")
-
-    def _scan_members(
-        self, zf: zipfile.ZipFile, relpath: str, parsers: list[Parser], tmp: Path
-    ) -> None:
-        names = set(zf.namelist())
-        for info in zf.infolist():
-            if info.is_dir():
-                continue
-            self.result.archive_members += 1
-            member = f"{relpath}/{info.filename}"
-            name = PurePosixPath(info.filename).name
-            try:
-                with zf.open(info) as fh:
-                    head = fh.read(HEAD_SIZE)
-            except (
-                RuntimeError,
-                NotImplementedError,
-                zipfile.BadZipFile,
-                zlib.error,
-                OSError,
-            ) as exc:
-                self.result.warnings.append(f"{member}: cannot read ({exc})")
-                continue
-            matched = [p for p in parsers if self._member_matches(p, name, head, member, tmp)]
-            if not matched:
-                continue
-            work = tmp / "member"
-            work.mkdir()
-            try:
-                target = work / (_UNSAFE_NAME.sub("_", name) or "member")
-                self._extract(zf, info.filename, target)
-                for suffix in SIDE_SUFFIXES:
-                    if info.filename + suffix in names:
-                        self._extract(
-                            zf, info.filename + suffix, target.with_name(target.name + suffix)
-                        )
-                self.result.archive_members_parsed += 1
-                for parser in matched:
-                    self._run(parser, target, member)
-            except (
-                RuntimeError,
-                NotImplementedError,
-                zipfile.BadZipFile,
-                zlib.error,
-                OSError,
-            ) as exc:
-                self.result.warnings.append(f"{member}: cannot extract ({exc})")
-            finally:
-                shutil.rmtree(work, ignore_errors=True)
+                    _MemberScan(self, relpath, member_parsers, Path(tmp)).run(opened)
+            except ContainerError as exc:
+                self.result.errors.append(f"cannot read {relpath}: {exc}")
 
     def _member_matches(
         self, parser: Parser, name: str, head: bytes, member: str, tmp: Path
@@ -225,7 +181,7 @@ class _Ingestor:
         try:
             verdict = parser.can_parse_head(name, head)
             if verdict is None:  # the parser needs a real file: probe with the head only
-                probe = tmp / "probe" / (_UNSAFE_NAME.sub("_", name) or "member")
+                probe = tmp / "probe" / _safe_name(name)
                 probe.parent.mkdir(exist_ok=True)
                 probe.write_bytes(head)
                 try:
@@ -236,11 +192,6 @@ class _Ingestor:
         except Exception as exc:
             self.result.errors.append(f"{parser.name} detection failed on {member}: {exc}")
             return False
-
-    @staticmethod
-    def _extract(zf: zipfile.ZipFile, name: str, target: Path) -> None:
-        with zf.open(name) as src, open(target, "wb") as dst:
-            shutil.copyfileobj(src, dst, 1024 * 1024)
 
     def ingest_file(self) -> None:
         path = self.root
@@ -284,6 +235,118 @@ class _Ingestor:
                 matched = self._matches(path)
                 if matched:
                     self._parse_artifacts(path, matched)
+
+
+def _safe_name(name: str) -> str:
+    return _UNSAFE_NAME.sub("_", name) or "member"
+
+
+class _MemberScan:
+    """One streaming pass over a container's members (see ``_expand_containers``)."""
+
+    def __init__(self, ingestor: _Ingestor, relpath: str, parsers: list[Parser], tmp: Path):
+        self.ingestor = ingestor
+        self.relpath = relpath
+        self.parsers = parsers
+        self.tmp = tmp
+        self.targets = 0
+        self.sides: dict[str, Path] = {}  # member path -> extracted -wal/-journal file
+        self.deferred: list[tuple[str, Path, list[Parser]]] = []  # SQLite databases
+
+    def run(self, container: Container) -> None:
+        container.stream(self.visit)
+        for member_path, target, parsers in self.deferred:
+            for suffix in SIDE_SUFFIXES:
+                side = self.sides.get(member_path + suffix)
+                if side is not None:
+                    shutil.copyfile(side, target.with_name(target.name + suffix))
+            self.parse(member_path, target, parsers)
+
+    def visit(self, member: Member) -> _MemberSink | None:
+        self.ingestor.result.archive_members += 1
+        return _MemberSink(self, member) if member.size else None
+
+    def detect(self, member: Member, head: bytes) -> list[Parser]:
+        name = PurePosixPath(member.path).name
+        where = f"{self.relpath}/{member.path}"
+        return [
+            p for p in self.parsers if self.ingestor._member_matches(p, name, head, where, self.tmp)
+        ]
+
+    def new_target(self, member: Member) -> Path:
+        self.targets += 1
+        folder = self.tmp / str(self.targets)
+        folder.mkdir()
+        return folder / _safe_name(PurePosixPath(member.path).name)
+
+    def finished(self, sink: _MemberSink, ok: bool) -> None:
+        target = sink.target
+        if target is None:
+            return
+        if not ok:
+            shutil.rmtree(target.parent, ignore_errors=True)
+            return
+        if sink.is_side:
+            self.sides[sink.member.path] = target
+        elif sink.is_sqlite:  # its -wal or -journal may still be ahead in the stream
+            self.deferred.append((sink.member.path, target, sink.parsers))
+        else:
+            self.parse(sink.member.path, target, sink.parsers)
+            shutil.rmtree(target.parent, ignore_errors=True)
+
+    def parse(self, member_path: str, target: Path, parsers: list[Parser]) -> None:
+        self.ingestor.result.archive_members_parsed += 1
+        for parser in parsers:
+            self.ingestor._run(parser, target, f"{self.relpath}/{member_path}")
+
+
+class _MemberSink:
+    """Collects a member's head, decides whether it is wanted, and saves it if so."""
+
+    def __init__(self, scan: _MemberScan, member: Member) -> None:
+        self.scan = scan
+        self.member = member
+        self.head = bytearray()
+        self.decided = False
+        self.wants_more = True
+        self.parsers: list[Parser] = []
+        self.is_side = member.path.endswith(SIDE_SUFFIXES)
+        self.is_sqlite = False
+        self.target: Path | None = None
+        self.file: BinaryIO | None = None
+
+    def write(self, data: bytes) -> None:
+        if not self.decided:
+            room = HEAD_SIZE - len(self.head)
+            self.head += data[:room]
+            data = data[room:]
+            if len(self.head) < HEAD_SIZE:
+                return
+            self._decide()
+        if self.file is not None and data:
+            self.file.write(data)
+
+    def _decide(self) -> None:
+        self.decided = True
+        head = bytes(self.head)
+        self.head = bytearray()
+        if not self.is_side:
+            self.parsers = self.scan.detect(self.member, head)
+            self.is_sqlite = head.startswith(SQLITE_MAGIC)
+        if self.parsers or self.is_side:
+            self.target = self.scan.new_target(self.member)
+            self.file = open(self.target, "wb")  # noqa: SIM115 (closed in close())
+            self.file.write(head)
+        else:
+            self.wants_more = False
+
+    def close(self, ok: bool = True) -> None:
+        if not self.decided:
+            self._decide()
+        if self.file is not None:
+            self.file.close()
+            self.file = None
+        self.scan.finished(self, ok)
 
 
 def ingest(

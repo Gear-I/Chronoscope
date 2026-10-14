@@ -1,223 +1,197 @@
-"""Zip archives and Cellebrite UFED extractions (a ``.ufd`` descriptor next to a ``.zip``).
+"""Parsers for containers: zip, tar and 7z archives, disk images, and Cellebrite UFED.
 
-This parser records each archive member's own timestamps, read from the zip's UTC extra
-fields: NTFS (0x000A, 100 ns FILETIMEs), extended timestamp (0x5455, POSIX seconds) and the
-older Info-ZIP Unix field (0x5855). The plain zip date and time is local time with no zone and
-2-second resolution, so it is never turned into an event; members that have nothing else are
-counted in a warning. Artifacts *inside* the archive (browser databases, event logs, ...) are
-handled by the ingest, which runs the other parsers on matching members.
-
-A ``.ufd`` file is an INI-style descriptor. The archives it names are looked up next to it by
-file name only (never by a path taken from the file); if none is named, a ``.zip`` with the
-same stem is used.
+Each parser records the timestamps of every file inside the container (see
+``chronoscope.containers`` for where they come from). Artifacts *inside* a container, such as
+a browser database in a phone extraction or ``$MFT`` in an NTFS image, are parsed by the
+ingest, which streams the members through the other parsers.
 """
 
 from __future__ import annotations
 
-import configparser
-import re
-import struct
-import zipfile
-from collections.abc import Iterator
-from datetime import datetime, timezone
+from collections import Counter
+from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import ClassVar
 
+from chronoscope.containers import (
+    ContainerError,
+    Member,
+    container_kind,
+    open_container,
+    segments,
+    ufd_targets,
+)
 from chronoscope.event import TimelineEvent
 from chronoscope.parsers.base import ParseContext, Parser
-from chronoscope.timeutil import from_filetime
 
-ARTIFACT = "zip"
-ARCHIVE_SUFFIXES = (".zip",)
 UFD_SUFFIX = ".ufd"
-LOCAL_HEADER = struct.Struct("<IHHHHHIIIHH")
-LOCAL_HEADER_SIGNATURE = 0x04034B50
-NTFS_EXTRA = 0x000A
-UT_EXTRA = 0x5455
-UX_EXTRA = 0x5855
-
-MODIFIED = "Content Modification Time"
-ACCESSED = "Last Access Time"
-CREATED = "Creation Time"
-#: Info-ZIP's spec calls the third UT time "creation", but Info-ZIP itself stores the Unix
-#: inode change time there; other writers differ. The label says so rather than guessing.
-UT_CTIME = "Change or Creation Time (zip UT ctime)"
+#: Member events are labelled by container format, whichever parser reached the container,
+#: so a zip ingested directly and through its .ufd gives identical (de-duplicated) events.
+ARTIFACT_BY_KIND = {
+    "zip": "zip",
+    "tar": "tar",
+    "7z": "7z",
+    "ewf": "disk_image",
+    "raw": "disk_image",
+}
 
 
-def ufd_archives(ufd: Path) -> list[Path]:
-    """Archives a ``.ufd`` descriptor refers to, looked up next to it by file name."""
-    text = ufd.read_text(encoding="utf-8-sig", errors="replace")
-    values: list[str] = []
-    config = configparser.ConfigParser(strict=False, interpolation=None)
-    try:
-        config.read_string(text)
-        values = [v for section in config.sections() for _, v in config.items(section)]
-    except configparser.Error:
-        values = [m.group(1) for m in re.finditer(r"^[^=;#\n]+=\s*(.+?)\s*$", text, re.M)]
-    found: list[Path] = []
-    for value in values:
-        name = PurePosixPath(value.strip().strip('"').replace("\\", "/")).name
-        candidate = ufd.with_name(name) if name else None
-        if (
-            candidate is not None
-            and candidate.suffix.lower() in ARCHIVE_SUFFIXES
-            and candidate.is_file()
-            and candidate not in found
-        ):
-            found.append(candidate)
-    if not found:
-        sibling = ufd.with_suffix(".zip")
-        if sibling.is_file():
-            found.append(sibling)
-    return found
+def container_relpath(evidence_relpath: str, evidence: Path, container: Path) -> str:
+    """Where a container sits, relative to the evidence root (siblings of the ingested file)."""
+    if container == evidence:
+        return evidence_relpath
+    return (PurePosixPath(evidence_relpath).parent / container.name).as_posix()
 
 
-def _extra_fields(extra: bytes) -> dict[int, bytes]:
-    fields: dict[int, bytes] = {}
-    offset = 0
-    while offset + 4 <= len(extra):
-        header_id, size = struct.unpack_from("<HH", extra, offset)
-        data = extra[offset + 4 : offset + 4 + size]
-        if len(data) < size:
-            break
-        fields.setdefault(header_id, data)
-        offset += 4 + size
-    return fields
-
-
-def local_extra(fh: Any, info: zipfile.ZipInfo) -> bytes:
-    """The extra field from a member's local header (it has more UT times than the central)."""
-    fh.seek(info.header_offset)
-    header = fh.read(LOCAL_HEADER.size)
-    if len(header) < LOCAL_HEADER.size:
-        return b""
-    fields = LOCAL_HEADER.unpack(header)
-    if fields[0] != LOCAL_HEADER_SIGNATURE:
-        return b""
-    name_length, extra_length = fields[9], fields[10]
-    fh.seek(name_length, 1)
-    return fh.read(extra_length)
-
-
-def _posix(value: int) -> datetime | None:
-    return datetime.fromtimestamp(value, tz=timezone.utc) if value else None
-
-
-def member_times(central: bytes, local: bytes) -> tuple[str, list[tuple[str, datetime]]]:
-    """(source field, [(description, UTC time)]) from a member's extra fields.
-
-    NTFS times (100 ns) are preferred, then UT (seconds), then UX. Returns ("", []) when the
-    member only has the zone-less DOS date and time.
-    """
-    fields = {**_extra_fields(central), **_extra_fields(local)}
-    ntfs = fields.get(NTFS_EXTRA)
-    if ntfs and len(ntfs) >= 4:
-        offset = 4  # reserved
-        while offset + 4 <= len(ntfs):
-            tag, size = struct.unpack_from("<HH", ntfs, offset)
-            if tag == 1 and size >= 24 and offset + 4 + 24 <= len(ntfs):
-                mtime, atime, ctime = struct.unpack_from("<3Q", ntfs, offset + 4)
-                times = [(MODIFIED, mtime), (ACCESSED, atime), (CREATED, ctime)]
-                return "NTFS", [(d, t) for d, v in times if (t := from_filetime(v))]
-            offset += 4 + size
-    ut = fields.get(UT_EXTRA)
-    if ut:
-        flags, offset, times = ut[0], 1, []
-        for bit, desc in ((1, MODIFIED), (2, ACCESSED), (4, UT_CTIME)):
-            if flags & bit and offset + 4 <= len(ut):
-                (value,) = struct.unpack_from("<I", ut, offset)
-                offset += 4
-                if stamp := _posix(value):
-                    times.append((desc, stamp))
-        if times:
-            return "UT", times
-    ux = fields.get(UX_EXTRA)
-    if ux and len(ux) >= 8:
-        atime, mtime = struct.unpack_from("<II", ux, 0)
-        times = [(d, t) for d, v in ((MODIFIED, mtime), (ACCESSED, atime)) if (t := _posix(v))]
-        if times:
-            return "UX", times
-    return "", []
-
-
-def is_archive(path: Path) -> bool:
-    suffix = path.suffix.lower()
-    if suffix == UFD_SUFFIX:
-        return path.is_file()
-    return suffix in ARCHIVE_SUFFIXES and zipfile.is_zipfile(path)
-
-
-class ArchiveParser(Parser):
-    name = ARTIFACT
-    description = "Zip archives and Cellebrite UFED extractions (.ufd + .zip): member times"
+class ContainerParser(Parser):
+    #: Container kinds (see ``container_kind``) this parser handles.
+    kinds: ClassVar[tuple[str, ...]] = ()
 
     def can_parse(self, path: Path) -> bool:
         try:
-            return is_archive(path)
+            return container_kind(path) in self.kinds
         except OSError:
             return False
 
     def can_parse_head(self, name: str, head: bytes) -> bool:
-        return False  # archives inside archives are not opened
+        return False  # containers inside containers are not opened
 
-    def archives(self, path: Path) -> list[Path]:
-        """The zip files this evidence file stands for."""
-        if path.suffix.lower() == UFD_SUFFIX:
-            return ufd_archives(path)
-        return [path]
+    def containers(self, path: Path) -> list[tuple[Path, str]]:
+        """The containers an evidence file stands for, as (path, kind)."""
+        kind = container_kind(path)
+        return [(path, kind)] if kind in self.kinds else []
 
     def related_files(self, path: Path) -> list[Path]:
-        return [p for p in self.archives(path) if p != path]
+        files: list[Path] = []
+        for container, kind in self.containers(path):
+            files += [p for p in segments(container, kind) if p != path and p not in files]
+        return files
 
     def parse(self, path: Path, ctx: ParseContext) -> Iterator[TimelineEvent]:
-        archives = self.archives(path)
-        if not archives:
-            ctx.warn("UFED descriptor names no archive found next to it; nothing to read")
+        targets = self.containers(path)
+        if not targets:
+            ctx.warn("no readable container found")
             return
-        base = PurePosixPath(ctx.relpath).parent
-        for archive in archives:
-            relpath = (base / archive.name).as_posix() if archive != path else ctx.relpath
-            yield from self._members(archive, relpath, ctx)
+        for container, kind in targets:
+            relpath = container_relpath(ctx.relpath, path, container)
+            # ctx.warn already names the ingested file; name the container only if it differs.
+            label = "" if container == path else f"{relpath}: "
 
-    def _members(self, archive: Path, relpath: str, ctx: ParseContext) -> Iterator[TimelineEvent]:
-        without_utc = 0
-        with zipfile.ZipFile(archive) as zf, open(archive, "rb") as raw:
-            for info in zf.infolist():
-                try:
-                    source, times = member_times(info.extra, local_extra(raw, info))
-                except (OSError, struct.error, ValueError) as exc:
-                    ctx.warn(f"{relpath}: {info.filename}: unreadable timestamps ({exc})")
-                    continue
-                if not times:
-                    without_utc += 1
-                    continue
-                member = info.filename
-                path = f"{relpath}/{member}"
-                attrs = {
-                    "archive": relpath,
-                    "member": member,
-                    "is_dir": info.is_dir(),
-                    "size": info.file_size,
-                    "compressed_size": info.compress_size,
-                    "crc32": f"{info.CRC:08x}",
-                    "time_source": source,
-                    "dos_time_local": "{:04d}-{:02d}-{:02d} {:02d}:{:02d}:{:02d}".format(
-                        *info.date_time
-                    ),
-                }
-                kind = "dir" if info.is_dir() else f"{info.file_size} bytes"
-                for desc, stamp in times:
-                    yield TimelineEvent(
-                        timestamp=stamp,
-                        timestamp_desc=desc,
-                        source="FILE",
-                        artifact=self.name,
-                        message=f"{member} ({kind}, in {archive.name})",
-                        path=path,
-                        attributes=attrs,
-                    )
-        if without_utc:
-            ctx.warn(
-                f"{relpath}: {without_utc} member(s) have only the zip's local, zone-less "
-                "DOS time; no timestamps recorded for them"
+            def warn(message: str, label: str = label) -> None:
+                ctx.warn(label + message)
+
+            try:
+                with open_container(container, kind, warn) as c:
+                    artifact = ARTIFACT_BY_KIND[kind]
+                    yield from self._events(c.members(), relpath, container.name, artifact, warn)
+            except ContainerError as exc:
+                warn(str(exc))
+
+    def _events(
+        self,
+        members: Iterator[Member],
+        relpath: str,
+        container_name: str,
+        artifact: str,
+        warn: Callable[[str], None],
+    ) -> Iterator[TimelineEvent]:
+        without_time: Counter[str] = Counter()
+        for member in members:
+            if not member.times:
+                if member.no_time_reason:
+                    without_time[member.no_time_reason] += 1
+                continue
+            attrs = {
+                "container": relpath,
+                "member": member.path,
+                "is_dir": member.is_dir,
+                "size": member.size,
+                "time_source": member.time_source,
+                **member.attributes,
+            }
+            kind = "dir" if member.is_dir else f"{member.size} bytes"
+            deleted = ", deleted" if member.attributes.get("deleted") else ""
+            for desc, stamp in member.times:
+                yield TimelineEvent(
+                    timestamp=stamp,
+                    timestamp_desc=desc,
+                    source="FILE",
+                    artifact=artifact,
+                    message=f"{member.path} ({kind}{deleted}, in {container_name})",
+                    path=f"{relpath}/{member.path}",
+                    attributes=attrs,
+                )
+        for reason, count in sorted(without_time.items()):
+            warn(f"{count} member(s) have no usable timestamps ({reason})")
+
+
+class ZipParser(ContainerParser):
+    name = "zip"
+    description = "Zip archives: each member's times from the zip's UTC extra fields"
+    kinds = ("zip",)
+
+
+class TarParser(ContainerParser):
+    name = "tar"
+    description = "Tar archives (.tar, .tar.gz, .tar.bz2, .tar.xz): member times"
+    kinds = ("tar",)
+
+
+class SevenZipParser(ContainerParser):
+    name = "7z"
+    description = "7z archives: member times"
+    kinds = ("7z",)
+
+    @classmethod
+    def unavailable_reason(cls) -> str | None:
+        try:
+            import py7zr  # noqa: F401
+        except ImportError:
+            return "py7zr is not installed (pip install 'chronoscope-forensics[archives]')"
+        return None
+
+
+class DiskImageParser(ContainerParser):
+    name = "disk_image"
+    description = "Disk images (E01/Ex01, raw .dd/.img/.raw/.001): file system walk via TSK"
+    kinds = ("ewf", "raw")
+
+    @classmethod
+    def unavailable_reason(cls) -> str | None:
+        try:
+            import pyewf  # noqa: F401
+            import pytsk3  # noqa: F401
+        except ImportError:
+            return (
+                "pytsk3 and libewf-python are not installed "
+                "(pip install 'chronoscope-forensics[images]')"
             )
+        return None
+
+
+class UfedParser(ContainerParser):
+    name = "ufed"
+    description = "Cellebrite UFED extraction descriptor (.ufd) and the zip/image it names"
+    kinds = ("zip", "tar", "7z", "ewf", "raw")
+
+    def can_parse(self, path: Path) -> bool:
+        return path.suffix.lower() == UFD_SUFFIX and path.is_file()
+
+    def containers(self, path: Path) -> list[tuple[Path, str]]:
+        try:
+            return ufd_targets(path)
+        except OSError:
+            return []
+
+    def related_files(self, path: Path) -> list[Path]:
+        return super().related_files(path)
+
+
+#: Container parsers whose formats are opened when the ingest expands members.
+CONTAINER_PARSERS: tuple[type[ContainerParser], ...] = (
+    ZipParser,
+    TarParser,
+    SevenZipParser,
+    DiskImageParser,
+    UfedParser,
+)

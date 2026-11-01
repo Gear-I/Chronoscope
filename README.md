@@ -8,15 +8,17 @@ Chronoscope ingests artifacts from many sources (file system metadata, browser h
 
 It is built for casework: evidence is never modified, every action is recorded in a tamper-evident audit log, and the same input always produces the same output.
 
-> **Status:** v0.1, alpha. Validate results against a second tool before relying on them in a report.
+> **Status:** 0.1.0a1, an alpha for testing and feedback. Validate results against a second tool before relying on them in a report, and see [Alpha testing](#alpha-testing) for how to report what you find.
 
 ## Install
 
+Chronoscope needs Python 3.10 or later. The alpha is published as a wheel on the [releases page](https://github.com/Gear-I/Chronoscope/releases) rather than on PyPI. To install it with every optional feature:
+
 ```bash
-pip install "chronoscope-forensics[evtx]"
+pip install "chronoscope-forensics[gui,images,archives,evtx] @ https://github.com/Gear-I/Chronoscope/releases/download/v0.1.0a1/chronoscope_forensics-0.1.0a1-py3-none-any.whl"
 ```
 
-Or, from a checkout:
+Use a virtual environment (`python -m venv chronoscope-env`) so it doesn't mix with other tools. Or, from a checkout:
 
 ```bash
 pip install -e ".[dev]"
@@ -41,7 +43,7 @@ Evidence can be any of:
 - **An extracted `$MFT`** (for example from `icat image.E01 0` or a triage collector). Every entry, including deleted ones, gets its SI and FN times.
 - **An archive or disk image**: `.zip`, `.tar`/`.tar.gz`/`.tgz`/`.tar.bz2`/`.tar.xz`, `.7z`, EnCase `.E01`/`.Ex01`, or a raw `.dd`/`.img`/`.raw` image (including split `.001`, `.002`, ...). Chronoscope records the timestamps of every file inside and parses the artifacts it recognises there, such as a `$MFT` in an NTFS image or a browser `History` in a phone extraction, without extracting everything. Disk images may have a partition table; every partition with a file system The Sleuth Kit can read is walked, including deleted entries.
 - **A Cellebrite UFED extraction**: ingest the `.ufd` descriptor, and Chronoscope reads the archive or image it names (a `.zip`, or a physical `.bin`).
-- **A Sleuth Kit body file** (`fls -r -m / image.E01 > image.body`). This is the way to use disk images, including deleted entries.
+- **A Sleuth Kit body file** (`fls -r -m / image.E01 > image.body`). Use this for images Chronoscope can't open itself, such as VMDK or VHDX.
 
 Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope parsers` to list them. Set the name recorded in the audit log with `--operator` or the `CHRONOSCOPE_OPERATOR` environment variable.
 
@@ -104,6 +106,19 @@ case-2024-017/
 ## Writing a parser
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Parsers can live in this repository or ship as separate packages registered through the `chronoscope.parsers` entry-point group.
+
+## Alpha testing
+
+This alpha is for finding out where Chronoscope is wrong, slow or confusing before it is used in casework. Feedback of any size helps.
+
+1. Install it as above, and run `chronoscope --version` and `chronoscope parsers` to check which parsers are available.
+2. Try it on evidence where you know the answer: test data you created, or a public image such as the [NIST CFReDS](https://cfreds.nist.gov/) data sets. Don't use live casework.
+3. Compare results with a tool you trust. `tools/compare_mftecmd.py` and `tools/compare_plaso.py` do this automatically (see [CONTRIBUTING.md](CONTRIBUTING.md#validating-against-other-tools)).
+4. Report what you find with one of the [issue forms](https://github.com/Gear-I/Chronoscope/issues/new/choose): a wrong or missing result, a crash, or general feedback.
+
+**Never attach real case data, personal data or evidence files to an issue.** Describe the artifact, replace sensitive values, or reproduce the problem on test data.
+
+Most useful right now: results on full-size E01 images, real phone extractions (`.ufd`), large `$MFT` files, and any timestamp that disagrees with MFTECmd or plaso.
 
 ## Known limitations
 

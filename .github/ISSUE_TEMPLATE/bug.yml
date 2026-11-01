@@ -1,0 +1,39 @@
+name: Crash or error
+description: Chronoscope crashed, failed to install, or showed an error it should not have
+labels: ["alpha-feedback", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not attach or paste real case data, personal data or evidence files.** Paths in tracebacks can be shortened or replaced.
+  - type: input
+    id: version
+    attributes:
+      label: Chronoscope version
+      description: Output of `chronoscope --version`
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and Python version
+      placeholder: Windows 11, Python 3.12
+    validations:
+      required: true
+  - type: input
+    id: extras
+    attributes:
+      label: Install command
+      placeholder: pip install "chronoscope-forensics[gui,images,archives,evtx] @ ..."
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Error output or traceback
+      render: shell

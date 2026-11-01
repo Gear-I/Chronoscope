@@ -1,0 +1,68 @@
+name: Wrong or missing result
+description: A timestamp, path or event that differs from the evidence or from another tool
+labels: ["alpha-feedback", "wrong-result"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for testing. **Do not attach or paste real case data, personal data or evidence files.** Describe the artifact, or reproduce the problem on test data you created.
+  - type: input
+    id: version
+    attributes:
+      label: Chronoscope version
+      description: Output of `chronoscope --version`
+      placeholder: chronoscope, version 0.1.0a1
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and Python version
+      placeholder: Windows 11, Python 3.12
+    validations:
+      required: true
+  - type: dropdown
+    id: parser
+    attributes:
+      label: Parser or container
+      options:
+        - mft
+        - filesystem
+        - bodyfile
+        - chromium_history
+        - firefox_history
+        - evtx
+        - zip / ufed
+        - tar
+        - 7z
+        - disk_image (E01, raw)
+        - export (CSV / JSONL)
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: Evidence source
+      description: What produced the input (OS and version, browser and version, acquisition tool, image format)
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: The value you expected, and how you know it (a second tool such as MFTECmd or plaso, or a known action you performed)
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Chronoscope's result
+      description: The event as exported (a JSONL line with any sensitive values replaced), or the output of tools/compare_mftecmd.py or tools/compare_plaso.py
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Commands or steps
+      render: shell

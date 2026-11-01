@@ -1,0 +1,24 @@
+name: Feedback or feature request
+description: What worked, what didn't, and what you need next
+labels: ["alpha-feedback"]
+body:
+  - type: textarea
+    id: use
+    attributes:
+      label: How you used Chronoscope
+      description: The kind of evidence, roughly how much, and CLI or desktop app
+    validations:
+      required: true
+  - type: textarea
+    id: worked
+    attributes:
+      label: What worked well
+  - type: textarea
+    id: friction
+    attributes:
+      label: What was confusing, slow or missing
+  - type: textarea
+    id: next
+    attributes:
+      label: Artifacts or formats you need next
+      description: For example registry hives, prefetch, LNK, VMDK/VHDX, iOS or Android artifacts

@@ -12,7 +12,9 @@ It is built for casework: evidence is never modified, every action is recorded i
 
 ## Install
 
-Chronoscope needs Python 3.10 or later. The alpha is published as a wheel on the [releases page](https://github.com/Gear-I/Chronoscope/releases) rather than on PyPI. To install it with every optional feature:
+**Windows, no Python needed:** download `Chronoscope-<version>-windows-x64.zip` from the [releases page](https://github.com/Gear-I/Chronoscope/releases), unzip it, and run `Chronoscope.exe` (the desktop app) or `chronoscope-cli.exe` (the command line). Keep the folder together. The alpha isn't code-signed, so SmartScreen may ask you to confirm with More info > Run anyway.
+
+**With Python (any OS):** Chronoscope needs Python 3.10 or later. The alpha is published as a wheel on the [releases page](https://github.com/Gear-I/Chronoscope/releases) rather than on PyPI. To install it with every optional feature:
 
 ```bash
 pip install "chronoscope-forensics[gui,images,archives,evtx] @ https://github.com/Gear-I/Chronoscope/releases/download/v0.1.0a1/chronoscope_forensics-0.1.0a1-py3-none-any.whl"

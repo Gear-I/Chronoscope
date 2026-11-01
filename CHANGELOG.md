@@ -21,6 +21,7 @@ First release for outside testing. Results have not yet been validated on real c
 ### Desktop app
 
 - `chronoscope gui` (`gui` extra): a Qt timeline viewer with text, artifact, evidence, time, flagged and deleted filters, plus ingest and export dialogs.
+- A Windows build that needs no Python: `Chronoscope-0.1.0a1-windows-x64.zip` holds `Chronoscope.exe` (the desktop app) and `chronoscope-cli.exe`, with every optional parser included.
 
 ### Validation tools
 

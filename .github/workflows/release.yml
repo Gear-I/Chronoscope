@@ -1,16 +1,31 @@
 name: Release
 
-# Pushing a tag such as v0.1.0a1 builds the sdist and wheel, checks them and publishes a
-# GitHub release. Tags with a pre-release suffix (a, b, rc) are marked as pre-releases.
+# Pushing a tag such as v0.1.0a1 builds the sdist, the wheel and the Windows app, checks
+# them and publishes a GitHub release. Tags with a pre-release suffix (a, b, rc) are marked
+# as pre-releases.
+#
+# Running the workflow by hand (Actions > Release > Run workflow) with an existing tag
+# rebuilds the Windows app from the chosen branch and adds it to that tag's release.
+# Pull requests that change the packaging run the build and smoke tests without publishing.
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths: ["packaging/**", ".github/workflows/release.yml"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to add the Windows app to (e.g. v0.1.0a1)
+        required: true
 
 permissions:
   contents: write
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
-  release:
+  python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,13 +33,13 @@ jobs:
         with:
           python-version: "3.12"
       - name: Tag matches the package version
+        if: github.event_name != 'pull_request'
         run: |
           version=$(python -c "import re; print(re.search(r'__version__ = \"(.+)\"', open('src/chronoscope/__init__.py').read())[1])")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match __version__ $version" >&2
+          if [ "v$version" != "$TAG" ]; then
+            echo "Tag $TAG does not match __version__ $version" >&2
             exit 1
           fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
       - name: Build
         run: |
           python -m pip install build twine
@@ -36,18 +51,82 @@ jobs:
           /tmp/smoke/bin/pip install dist/*.whl
           /tmp/smoke/bin/chronoscope --version
           /tmp/smoke/bin/chronoscope parsers
-      - name: Release notes from CHANGELOG.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python
+          path: dist/
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Chronoscope, all extras and PyInstaller
+        run: python -m pip install ".[gui,images,archives,evtx]" pyinstaller pillow
+      - name: Build
+        run: pyinstaller --noconfirm packaging/windows/chronoscope.spec
+      - name: Smoke test
+        shell: pwsh
         run: |
-          awk -v v="$VERSION" '
+          $ErrorActionPreference = "Stop"
+          $app = "dist\Chronoscope"
+          & "$app\chronoscope-cli.exe" --version
+          $parsers = & "$app\chronoscope-cli.exe" parsers
+          $parsers
+          if ($parsers -match "UNAVAILABLE") { throw "a parser was not bundled" }
+          # Ingest a real E01 image so pytsk3 and libewf are exercised.
+          $env:CHRONOSCOPE_OPERATOR = "ci"
+          & "$app\chronoscope-cli.exe" init "$env:RUNNER_TEMP\case" --name smoke --examiner ci
+          & "$app\chronoscope-cli.exe" ingest "$env:RUNNER_TEMP\case" tests\data\dfvfs\ext2.E01
+          if ($LASTEXITCODE -ne 0) { throw "ingest failed" }
+          & "$app\chronoscope-cli.exe" verify "$env:RUNNER_TEMP\case"
+          if ($LASTEXITCODE -ne 0) { throw "verify failed" }
+          # The desktop app builds its window offscreen and exits.
+          $gui = Start-Process "$app\Chronoscope.exe" -ArgumentList "--smoke-test" -Wait -PassThru
+          if ($gui.ExitCode -ne 0) { throw "desktop app smoke test exited $($gui.ExitCode)" }
+      - name: Zip
+        shell: pwsh
+        run: |
+          $version = python -c "import chronoscope; print(chronoscope.__version__)"
+          Copy-Item LICENSE, packaging\windows\README.txt dist\Chronoscope\
+          Compress-Archive dist\Chronoscope "Chronoscope-$version-windows-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Chronoscope-*-windows-x64.zip
+
+  release:
+    if: github.event_name != 'pull_request'
+    needs: [python, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Release notes from CHANGELOG.md
+        if: github.event_name == 'push'
+        run: |
+          version="${TAG#v}"
+          awk -v v="$version" '
             /^## / { if (found) exit; if (index($0, "## " v " ") == 1 || $0 == "## " v) { found = 1; next } }
             found { print }
           ' CHANGELOG.md > notes.md
-          test -s notes.md || { echo "No CHANGELOG.md section for $VERSION" >&2; exit 1; }
+          test -s notes.md || { echo "No CHANGELOG.md section for $version" >&2; exit 1; }
       - name: Publish GitHub release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=""
-          case "$VERSION" in *a*|*b*|*rc*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/* --title "Chronoscope $VERSION" \
+          case "$TAG" in *a*|*b*|*rc*) prerelease="--prerelease" ;; esac
+          gh release create "$TAG" assets/* --title "Chronoscope ${TAG#v}" \
             --notes-file notes.md $prerelease
+      - name: Add the Windows app to an existing release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" assets/*-windows-x64.zip --clobber

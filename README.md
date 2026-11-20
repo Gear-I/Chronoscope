@@ -67,6 +67,23 @@ Use `--parser NAME` (repeatable) to restrict or force parsers, and `chronoscope 
 
 For every container format, files inside that another parser recognises are streamed out to a private temporary folder and parsed too: for example a `$MFT` inside an NTFS image, or a browser `History` with its `-wal` file inside a phone extraction.
 
+### Prefetch and registry hives (Corrobora plugin)
+
+[Corrobora](https://github.com/Gear-I/Corrobora), a tool that checks whether Windows artifacts corroborate each other, provides two more parsers as a Chronoscope plugin. Install it in the same environment as Chronoscope:
+
+```bash
+pip install "corrobora[chronoscope,images] @ git+https://github.com/Gear-I/Corrobora"
+```
+
+`chronoscope parsers` then also lists:
+
+| Name | Artifact | Events |
+|---|---|---|
+| `prefetch` | Windows Prefetch `.pf` | Every recorded run time, and the creation time of each referenced volume. A file name that doesn't match the embedded hash is noted in the message |
+| `registry` | Registry hives (SYSTEM, SOFTWARE, NTUSER.DAT, ...) | Every key's LastWrite time with its values, and BAM/DAM execution times from SYSTEM. A BAM time marks when the program exited, not when it started |
+
+Both work inside archives and disk images like the built-in parsers. Registry transaction logs (`.LOG1`/`.LOG2`) are not applied. See Corrobora's README for details. Corrobora needs Python 3.11 or later and isn't included in the Windows build.
+
 ## Output
 
 `export` writes the timeline in time order, with ties broken by fingerprint so the order is reproducible.
@@ -128,7 +145,7 @@ Most useful right now: results on full-size E01 images, real phone extractions (
 - Disk images: VMDK, VHD/VHDX, QCOW2, AFF4 and DMG are not supported yet, nor are APFS, BitLocker, LVM or LUKS volumes. Only allocated files inside an image are scanned for artifacts; deleted entries get their timestamps only, because their clusters may have been reused.
 - The `$MFT` parser does not follow `$ATTRIBUTE_LIST` into extension records, so a file with very many hard links can miss some names. Deleted entries whose parent directory was reused are placed under `/$OrphanFiles`.
 - Zip members that carry only the plain zip date and time, and every file on a FAT or exFAT file system, get no timestamp events, because those times are local time with no zone. Chronoscope counts them in a warning instead of guessing. Archives inside archives are not opened. Files inside containers are covered by the container's hash rather than hashed one by one.
-- Planned next: iOS and Android artifacts (Safari, messages, app usage), more image formats (VMDK, VHDX, AFF4), prefetch, LNK, registry hives, and HTML/PDF reports.
+- Planned next: iOS and Android artifacts (Safari, messages, app usage), more image formats (VMDK, VHDX, AFF4), LNK, and HTML/PDF reports. Prefetch and registry hives are covered by the [Corrobora plugin](#prefetch-and-registry-hives-corrobora-plugin).
 
 ## License
 
